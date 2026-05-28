@@ -1,0 +1,95 @@
+RealmForgeEngine/
+├── Source/
+│   ├── RealmForge/
+│   │   ├── Core/
+│   │   │   ├── RealmForgeGameInstance.h/.cpp
+│   │   │   ├── RealmForgeGameMode.h/.cpp
+│   │   │   ├── RealmForgeSaveGame.h/.cpp
+│   │   │   └── RealmForgeSettings.h/.cpp
+│   │   ├── Networking/
+│   │   │   ├── RFNetworkManager.h/.cpp
+│   │   │   ├── RFSessionManager.h/.cpp
+│   │   │   ├── RFReplicationComponent.h/.cpp
+│   │   │   └── RFLobbySystem.h/.cpp
+│   │   ├── World/
+│   │   │   ├── RFMapEditor.h/.cpp
+│   │   │   ├── RFTileSystem.h/.cpp
+│   │   │   ├── RFTerrainSculptor.h/.cpp
+│   │   │   ├── RFFogOfWar.h/.cpp
+│   │   │   ├── RFDynamicLighting.h/.cpp
+│   │   │   ├── RFWeatherSystem.h/.cpp
+│   │   │   └── RFProceduralDungeon.h/.cpp
+│   │   ├── Miniatures/
+│   │   │   ├── RFMiniatureBase.h/.cpp
+│   │   │   ├── RFPlayerMiniature.h/.cpp
+│   │   │   ├── RFNPCMiniature.h/.cpp
+│   │   │   ├── RFMiniatureMovement.h/.cpp
+│   │   │   └── RFTokenComponent.h/.cpp
+│   │   ├── Combat/
+│   │   │   ├── RFCombatManager.h/.cpp
+│   │   │   ├── RFInitiativeTracker.h/.cpp
+│   │   │   ├── RFDiceSystem.h/.cpp
+│   │   │   ├── RFSpellTemplates.h/.cpp
+│   │   │   └── RFStatusEffects.h/.cpp
+│   │   ├── GM/
+│   │   │   ├── RFGMController.h/.cpp
+│   │   │   ├── RFEncounterBuilder.h/.cpp
+│   │   │   ├── RFFogPainter.h/.cpp
+│   │   │   └── RFSceneDirector.h/.cpp
+│   │   ├── UI/
+│   │   │   ├── RFHUDBase.h/.cpp
+│   │   │   ├── RFInitiativeWidget.h/.cpp
+│   │   │   ├── RFDiceWidget.h/.cpp
+│   │   │   ├── RFChatWidget.h/.cpp
+│   │   │   ├── RFCharacterPanel.h/.cpp
+│   │   │   ├── RFAssetBrowser.h/.cpp
+│   │   │   └── RFCampaignPanel.h/.cpp
+│   │   ├── Campaign/
+│   │   │   ├── RFCampaignManager.h/.cpp
+│   │   │   ├── RFQuestSystem.h/.cpp
+│   │   │   ├── RFJournalSystem.h/.cpp
+│   │   │   └── RFNPCDatabase.h/.cpp
+│   │   ├── Audio/
+│   │   │   ├── RFAudioManager.h/.cpp
+│   │   │   └── RFAmbientZone.h/.cpp
+│   │   ├── Modding/
+│   │   │   ├── RFModLoader.h/.cpp
+│   │   │   ├── RFLuaBinding.h/.cpp
+│   │   │   └── RFModRegistry.h/.cpp
+│   │   └── AI/
+│   │       ├── RFAINPCController.h/.cpp
+│   │       └── RFOllamaIntegration.h/.cpp
+├── Content/
+│   ├── Maps/
+│   │   ├── ExampleMaps/
+│   │   │   ├── DungeonOfShadows.umap
+│   │   │   ├── TavernOfTales.umap
+│   │   │   └── OpenFieldBattle.umap
+│   │   └── Templates/
+│   ├── Miniatures/
+│   │   ├── Heroes/
+│   │   ├── Monsters/
+│   │   └── NPCs/
+│   ├── Props/
+│   │   ├── Walls/
+│   │   ├── Floors/
+│   │   ├── Furniture/
+│   │   └── Nature/
+│   ├── VFX/
+│   │   ├── Spells/
+│   │   ├── Dice/
+│   │   └── Ambient/
+│   ├── UI/
+│   │   ├── Fonts/
+│   │   ├── Icons/
+│   │   └── Widgets/
+│   └── Audio/
+│       ├── Ambient/
+│       ├── Combat/
+│       └── SFX/
+├── Mods/
+│   ├── SDK/
+│   │   ├── ModSDK.h
+│   │   └── ExampleMod/
+├── Docs/
+└── Config/
