@@ -1,0 +1,139 @@
+##############################################################
+# docker-compose.yml — Local Development
+# Mocks AWS services with LocalStack + local equivalents
+# Run: docker compose up -d
+##############################################################
+
+version: '3.9'
+
+services:
+
+  # ─── Dashboard API ──────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: ../docker/dashboard/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV:       development
+      PORT:           3000
+      DATABASE_URL:   postgresql://realmforge:devpass@postgres:5432/realmforge
+      REDIS_URL:      redis://redis:6379
+      JWT_SECRET:     dev-jwt-secret-change-in-prod
+      AWS_REGION:     us-east-1
+      ASSETS_BUCKET:  realmforge-local-assets
+      GAMELIFT_FLEET: local-fleet
+      CORS_ORIGIN:    "http://localhost:5173,http://localhost:3000"
+      # Point to LocalStack for AWS services
+      AWS_ENDPOINT_URL:       http://localstack:4566
+      AWS_ACCESS_KEY_ID:      test
+      AWS_SECRET_ACCESS_KEY:  test
+    volumes:
+      - ./dashboard/src:/app/src   # hot-reload
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [realmforge]
+
+  # ─── PostgreSQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB:       realmforge
+      POSTGRES_USER:     realmforge
+      POSTGRES_PASSWORD: devpass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/db-init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realmforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [realmforge]
+
+  # ─── Redis ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [realmforge]
+
+  # ─── LocalStack (AWS services locally) ──────────────────────
+  localstack:
+    image: localstack/localstack:3.0
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3,gamelift,secretsmanager,ssm,cloudwatch
+      DEFAULT_REGION: us-east-1
+      EAGER_SERVICE_LOADING: 1
+      LOCALSTACK_AUTH_TOKEN: ""   # community edition is free
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4566/_localstack/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks: [realmforge]
+
+  # ─── nginx (local CDN / reverse proxy) ──────────────────────
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/certs:/etc/nginx/certs:ro
+    depends_on: [dashboard]
+    networks: [realmforge]
+
+  # ─── Adminer (DB GUI) ───────────────────────────────────────
+  adminer:
+    image: adminer
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    networks: [realmforge]
+    profiles: [debug]
+
+  # ─── Redis Commander (Redis GUI) ────────────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    networks: [realmforge]
+    profiles: [debug]
+
+networks:
+  realmforge:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  localstack_data:

@@ -1,0 +1,304 @@
+##############################################################
+# .github/workflows/deploy.yml
+# RealmForge Engine — Full CI/CD Pipeline
+#
+# Triggers:
+#   push to main  → deploy to production
+#   push to dev   → deploy to staging
+#
+# Jobs:
+#   1. test           — run unit tests
+#   2. build-dashboard — build Docker image, push to ECR
+#   3. deploy-dashboard — update ECS service
+#   4. build-server   — cross-compile UE5 Linux server
+#   5. deploy-server  — upload to S3, create GameLift build
+##############################################################
+
+name: Deploy RealmForge
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      deploy_server:
+        description: 'Deploy game server (slow)'
+        required: false
+        default: 'false'
+
+env:
+  AWS_REGION:       us-east-1
+  ECR_REPOSITORY:   realmforge-prod-dashboard
+  ECS_CLUSTER:      realmforge-prod-cluster
+  ECS_SERVICE:      realmforge-prod-dashboard-svc
+  GAMELIFT_FLEET:   ${{ secrets.GAMELIFT_FLEET_ID }}
+  BUILD_BUCKET:     realmforge-prod-gamelift-builds
+
+jobs:
+
+  # ─── 1. Tests ──────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: realmforge_test
+          POSTGRES_USER: realmforge
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ['5432:5432']
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+        ports: ['6379:6379']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+
+      - run: npm test
+        env:
+          NODE_ENV:     test
+          DATABASE_URL: postgresql://realmforge:test@localhost:5432/realmforge_test
+          REDIS_URL:    redis://localhost:6379
+          JWT_SECRET:   test-secret-do-not-use-in-prod
+
+  # ─── 2. Build Dashboard Image ──────────────────────────────
+  build-dashboard:
+    name: Build & Push Dashboard Image
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      image: ${{ steps.build-push.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        id: build-push
+        working-directory: dashboard
+        env:
+          REGISTRY:    ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG:   ${{ github.sha }}
+        run: |
+          IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          LATEST="${REGISTRY}/${ECR_REPOSITORY}:latest"
+
+          docker build \
+            -f ../docker/dashboard/Dockerfile \
+            -t "${IMAGE}" \
+            -t "${LATEST}" \
+            --cache-from "${LATEST}" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            .
+
+          docker push "${IMAGE}"
+          docker push "${LATEST}"
+
+          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+
+  # ─── 3. Deploy Dashboard to ECS ────────────────────────────
+  deploy-dashboard:
+    name: Deploy Dashboard to ECS
+    runs-on: ubuntu-latest
+    needs: build-dashboard
+    environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition realmforge-prod-dashboard \
+            --query taskDefinition \
+            > task-def.json
+
+      - name: Update task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name:  dashboard
+          image:           ${{ needs.build-dashboard.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition:          ${{ steps.task-def.outputs.task-definition }}
+          service:                  ${{ env.ECS_SERVICE }}
+          cluster:                  ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes:         10
+
+      - name: Invalidate CloudFront cache
+        run: |
+          DIST_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Comment=='RealmForge Engine CDN'].Id" \
+            --output text)
+          if [ -n "${DIST_ID}" ]; then
+            aws cloudfront create-invalidation \
+              --distribution-id "${DIST_ID}" \
+              --paths "/api/*" "/"
+          fi
+
+      - name: Notify deployment
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          echo "Dashboard deployment ${STATUS} — commit ${{ github.sha }}"
+
+  # ─── 4. Build Game Server (manual trigger or server/ changes)
+  build-server:
+    name: Build Game Server
+    runs-on: ubuntu-latest
+    needs: test
+    if: |
+      github.event.inputs.deploy_server == 'true' ||
+      contains(github.event.head_commit.modified, 'server/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      # In practice, UE5 cross-compilation requires a self-hosted runner
+      # with UE5 installed. This step shows the structure.
+      - name: Build UE5 Linux Server
+        run: |
+          echo "Building RealmForge Linux Server..."
+          # On self-hosted runner with UE5:
+          # "$UE_ROOT/Engine/Build/BatchFiles/RunUAT.sh" \
+          #   BuildCookRun \
+          #   -project="$GITHUB_WORKSPACE/RealmForgeEngine.uproject" \
+          #   -platform=Linux \
+          #   -serverconfig=Shipping \
+          #   -server -noP4 -cook -compressed \
+          #   -archive -archivedirectory="$GITHUB_WORKSPACE/build"
+
+          # For demo: check that server script exists
+          ls server/RealmForgeServer.sh
+
+      - name: Package server build
+        run: |
+          mkdir -p build/server
+          cp server/RealmForgeServer.sh build/server/
+          # cp -r build/LinuxServer/* build/server/  # real build artifacts
+          cd build && zip -r RealmForgeServer-Linux.zip server/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-build-${{ github.sha }}
+          path: build/RealmForgeServer-Linux.zip
+          retention-days: 30
+
+  # ─── 5. Deploy Game Server to GameLift ─────────────────────
+  deploy-server:
+    name: Deploy to GameLift
+    runs-on: ubuntu-latest
+    needs: build-server
+    if: needs.build-server.result == 'success'
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Download server build
+        uses: actions/download-artifact@v4
+        with:
+          name: server-build-${{ github.sha }}
+
+      - name: Upload to S3
+        run: |
+          aws s3 cp RealmForgeServer-Linux.zip \
+            "s3://${BUILD_BUCKET}/server-builds/RealmForgeServer-Linux.zip" \
+            --metadata "GitCommit=${{ github.sha }},Branch=${{ github.ref_name }}"
+
+      - name: Create GameLift build
+        id: create-build
+        run: |
+          BUILD_ID=$(aws gamelift create-build \
+            --name "RealmForge-${{ github.sha }}" \
+            --operating-system AMAZON_LINUX_2 \
+            --storage-location "Bucket=${BUILD_BUCKET},Key=server-builds/RealmForgeServer-Linux.zip,RoleArn=${{ secrets.GAMELIFT_BUILD_ROLE_ARN }}" \
+            --region "${AWS_REGION}" \
+            --query 'Build.BuildId' \
+            --output text)
+
+          echo "build_id=${BUILD_ID}" >> $GITHUB_OUTPUT
+          echo "Created GameLift build: ${BUILD_ID}"
+
+      - name: Wait for build to be ready
+        run: |
+          BUILD_ID="${{ steps.create-build.outputs.build_id }}"
+          for i in $(seq 1 30); do
+            STATUS=$(aws gamelift describe-build \
+              --build-id "${BUILD_ID}" \
+              --query 'Build.Status' --output text)
+            echo "Build status: ${STATUS}"
+            if [ "${STATUS}" = "READY" ]; then
+              echo "Build ready!"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "Build timed out"
+          exit 1
+
+      - name: Update fleet with new build
+        run: |
+          echo "Fleet update requires manual zero-downtime blue/green deployment."
+          echo "New build: ${{ steps.create-build.outputs.build_id }}"
+          echo "Trigger fleet replacement via Terraform or AWS Console."
+          # In production, use a blue/green fleet swap:
+          # 1. Create new fleet with new build
+          # 2. Update alias to point to new fleet
+          # 3. Drain old fleet
