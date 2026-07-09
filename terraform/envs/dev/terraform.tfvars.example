@@ -1,0 +1,25 @@
+##############################################################
+# terraform/envs/dev/terraform.tfvars.example
+# Copy to terraform.tfvars and fill in values for DEV environment.
+# Run from repo root: terraform apply -var-file=envs/dev/terraform.tfvars
+##############################################################
+
+aws_region  = "us-east-1"
+environment = "dev"
+
+# Dev subdomain — must exist in Route53 as a hosted zone
+domain_name = "dev.realmforge.gg"
+
+# Use different secrets from prod — generate with:
+#   openssl rand -hex 32
+db_password = "REPLACE_WITH_DEV_DB_PASSWORD"
+jwt_secret  = "REPLACE_WITH_DEV_JWT_SECRET_64_CHARS"
+
+# Dev ECR image (push separately or reuse prod image for dev testing)
+dashboard_ecr_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/realmforge-dev-dashboard:latest"
+
+# Path to packaged UE5 Linux server zip (leave empty to skip GameLift server upload)
+server_build_zip = ""
+
+# Dev alert email (can be personal/team email)
+alert_email = "dev-alerts@realmforge.gg"

@@ -1,238 +1,188 @@
-# RealmForge Engine 🏰
-### A Next-Generation 3D Virtual Tabletop RPG Platform
-
-> *"Where every session becomes a legend."*
+# RealmForge Engine — AWS Deployment
+### Full cloud infrastructure for the 3D Tabletop RPG Platform
 
 ---
 
-## Overview
-
-RealmForge Engine is a full-featured, moddable 3D virtual tabletop RPG platform built on Unreal Engine 5. It combines the immersive 3D world of TaleSpire, the GM toolset of Foundry VTT, and the production quality of a commercial game — delivered as an open, extensible platform.
-
----
-
-## Feature Matrix
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| 3D Map Editor | ✅ Core | Grid-based, multi-layer |
-| Fog of War | ✅ Core | Bresenham LOS, smooth reveal |
-| Miniatures | ✅ Core | HP, status, movement, selection rings |
-| Dice System | ✅ Core | Physics d4–d20, formulas, chat commands |
-| Initiative Tracker | ✅ Core | Auto-sort, delay/ready, round counter |
-| Multiplayer | ✅ Core | UE5 OnlineSubsystem, LAN + Online |
-| GM Controller | ✅ Core | Hidden layers, notes, scene switch |
-| Campaign Save | ✅ Core | Binary + JSON, auto-save |
-| Procedural Dungeon | ✅ Core | BSP rooms, corridors, themes |
-| Lua Modding | ✅ Core | Sandboxed per-mod Lua states |
-| AI NPCs (Ollama) | ✅ Optional | Local LLM, fallback responses |
-| Dynamic Lighting | ✅ UE5 Lumen | Torch radius, day/night |
-| Volumetric Fog | ✅ UE5 | Weather system integration |
-| Voice Chat | 🔄 Planned | EOS overlay or Vivox |
-| VR Support | 🔄 Planned | OpenXR plugin |
-| Mobile Companion | 🔄 Planned | React Native app |
-| Steam Workshop | 🔄 Planned | Mod distribution |
-
----
-
-## Architecture
+## What This Deploys
 
 ```
-RealmForgeEngine/
+                        ┌─────────────────────────────────────┐
+                        │         realmforge.gg               │
+  Players (browser) ───▶│  CloudFront CDN (TLS, gzip, cache)  │◀─── Assets (S3)
+  GMs (browser)         └───────────────┬─────────────────────┘
+                                        │
+                              ┌─────────▼──────────┐
+                              │  ALB (HTTPS 443)   │
+                              └─────────┬──────────┘
+                                        │
+                              ┌─────────▼──────────┐
+                              │   ECS Fargate       │  WebSocket /ws
+                              │   Dashboard API     │  REST /api
+                              │   Node.js 20        │
+                              │   2 tasks (HA)      │
+                              └──┬──────────┬───────┘
+                                 │          │
+                         ┌───────▼──┐  ┌───▼──────────┐
+                         │ RDS PG15 │  │ Redis 7       │
+                         │ Campaigns│  │ Sessions      │
+                         │ Users    │  │ Presence      │
+                         └──────────┘  └───────────────┘
+
+  Players (UE5 client, UDP) ───▶ AWS GameLift Fleet (c5.large × N)
+                                  UE5 Dedicated Server
+                                  Auto-scales 1–10 instances
+```
+
+---
+
+## Repository Structure
+
+```
+RealmForgeAWS/
+├── terraform/                     ← Infrastructure as Code
+│   ├── main.tf                    ← Root module, ties everything together
+│   ├── variables.tf               ← All configurable inputs
+│   ├── outputs.tf                 ← URLs, IDs, endpoints
+│   ├── monitoring.tf              ← CloudWatch alarms + dashboard
+│   └── modules/
+│       ├── vpc/                   ← VPC, subnets, security groups
+│       ├── ecs/                   ← Fargate, ALB, ECR, auto-scaling
+│       ├── rds/                   ← PostgreSQL 15
+│       ├── elasticache/           ← Redis 7
+│       ├── gamelift/              ← Fleet, queue, matchmaking
+│       └── cdn/                   ← CloudFront, S3, ACM, Route53
 │
-├── Source/RealmForge/
-│   ├── Core/           GameInstance, SaveGame, Settings
-│   ├── Networking/     Session hosting, roles, reconnection
-│   ├── World/          Map editor, tiles, fog, lighting, weather, proc dungeon
-│   ├── Miniatures/     Token system, HP, movement, status effects
-│   ├── Combat/         Dice, initiative, spell templates, status effects
-│   ├── GM/             GM controller, notes, encounter builder, scene director
-│   ├── UI/             HUD, all panel widgets, radial menus
-│   ├── Campaign/       Save/load, quests, journal, NPC database
-│   ├── Audio/          Ambient zones, dynamic music, SFX manager
-│   ├── Modding/        Lua loader, asset registry, SDK
-│   └── AI/             Ollama HTTP client, NPC dialogue, generation
+├── dashboard/                     ← Node.js API server (runs on ECS)
+│   ├── src/
+│   │   ├── server.js              ← Express API + WebSocket relay
+│   │   └── rf-aws-client.js      ← Client-side SDK (for browser companion)
+│   └── package.json
 │
-├── Content/            UE5 assets (maps, meshes, VFX, UI, audio)
-├── Mods/SDK/           Example mod + Lua API reference
-├── Config/             Engine, game, scalability INI files
-└── Docs/               Build guide, networking, modding SDK, asset import
+├── server/                        ← UE5 dedicated server AWS integration
+│   ├── src/
+│   │   ├── RFGameLiftServer.h/cpp ← GameLift SDK integration
+│   │   └── RFAWSConnector.h/cpp  ← Client-side AWS connector
+│   └── RealmForgeServer.sh       ← GameLift launch script
+│
+├── docker/
+│   ├── dashboard/Dockerfile       ← Multi-stage production image
+│   └── nginx/nginx.dev.conf      ← Local dev reverse proxy
+│
+├── docker-compose.yml             ← Full local dev stack (LocalStack)
+├── scripts/
+│   ├── db-init.sql                ← PostgreSQL schema
+│   └── localstack-init.sh        ← Local AWS mock setup
+│
+├── .github/workflows/deploy.yml  ← CI/CD pipeline
+└── docs/
+    └── DEPLOYMENT_RUNBOOK.md      ← Step-by-step deployment guide
 ```
 
 ---
 
-## Core Systems Deep-Dive
+## Quick Start
 
-### Fog of War (`RFFogOfWar`)
-- **64×64 default grid** (configurable up to 256×256)
-- **Bresenham line-of-sight** raycasting per miniature movement
-- **Three states:** Hidden (black) → Explored (dimmed) → Visible (full)
-- **Smooth transitions** via per-frame alpha interpolation
-- **Texture output:** UTexture2D updated every frame, drives a decal material
-- **GM paint tool:** brush-based reveal/hide at any radius
-- **Flood-fill reveal:** for GM "reveal this room" workflow
-- **Multicast RPC:** cell changes propagated to all clients efficiently
+### Local Development (5 minutes)
 
-### Dice System (`ARFDiceManager`)
-- **Formula parser:** `"2d8+3"`, `"d20 adv"`, `"4d6kh3"` (keep highest)
-- **Chat commands:** `/roll`, `/gmroll` (GM-only), `/initiative`
-- **Advantage/disadvantage:** roll-twice, pick high/low
-- **Critical detection:** nat-20 on d20 doubles damage dice
-- **Visibility tiers:** Public / GM-Only / Private (Client RPC)
-- **Roll history:** last 200 rolls in memory, filterable
-- **Physics dice:** Blueprint-driven 3D dice throw in dice tray
+```bash
+git clone https://github.com/your-org/RealmForgeAWS
+cd RealmForgeAWS
 
-### Miniature System (`ARFMiniatureBase`)
-- **Creature sizes:** Tiny–Gargantuan (auto-scales mesh + selection ring)
-- **Turn resources:** Action, Bonus Action, Reaction, Movement (reset each turn)
-- **Movement validation:** server-side, remaining-movement check, anti-cheat distance clamp
-- **Status effects:** named, colored, round-countdown, auto-expire
-- **HP layers:** Temp HP absorbs before regular HP
-- **Replicated stats:** full DOREPLIFETIME on Stats struct, OnRep callbacks
+# Start everything locally
+docker compose up -d
 
-### Multiplayer (`URFNetworkManager`)
-- **UE5 OnlineSubsystem** abstraction (NULL for LAN, Steam for release)
-- **Session metadata:** CampaignName, GMName stored in session settings
-- **Role system:** GameMaster, AssistantGM, Player, Spectator
-- **Reconnection:** auto-retry on ConnectionLost/Timeout failure
-- **Permission enforcement:** Server RPCs validate GM role before sensitive ops
-
-### GM Controller (`ARFGMController`)
-- **Hidden object layers:** tag-based (`GM_Layer_Secrets`)
-- **Secret notes:** world-attached or floating, GM-only visibility
-- **Scene switching:** Cut / Fade / Wipe / Cinematic transitions
-- **Monster spawning:** with auto-initiative-add if in combat
-- **Encounter templates:** save/load CR-rated encounter presets
-- **Camera bookmarks:** named save-points with smooth interpolation
-- **Ping system:** multicast world-space pings with color + label
-
-### Procedural Dungeon (`ARFProceduralDungeon`)
-- **BSP-inspired room placement** with overlap detection + padding
-- **L-shaped corridor carving** with configurable width
-- **Loop corridors:** ~15% chance of secondary connections
-- **Room type assignment:** largest room = boss, first = entrance, last = exit
-- **Tile types:** Empty, Floor, Wall, Door, Stairs, Trap, Chest
-- **Theme system:** maps to tileset packs per theme
-- **Seeded generation:** reproducible dungeons via `Config.Seed`
-- **Room descriptions:** procedural atmospheric text per room type
-
-### Campaign Manager (`URFCampaignManager`)
-- **Binary save format** (FArchive) + JSON sidecar for tooling
-- **Auto-save timer:** configurable interval (default 5 min)
-- **World state KV store:** flexible flag system for story tracking
-- **Quest system:** objectives, completion tracking, active filter
-- **NPC database:** per-NPC notes by topic, attitude tracking
-- **Journal:** GM-only and shared entries, timestamps
-
-### Modding (`URFModLoader`)
-- **Per-mod sandboxed Lua states** (isolation, no cross-mod leaks)
-- **Manifest-driven:** `manifest.json` declares entry, version, deps
-- **Lua API exposed:** `RF.RegisterAsset`, `RF.RollDice`, `RF.SpawnMiniature`, `RF.AddChatMessage`, `RF.RegisterChatCommand`, `RF.OnRoundStart`, `RF.RegisterUIPanel`, and more
-- **Hot-reload friendly:** unload/reload without restarting
-
-### AI Integration (`URFOllamaIntegration`)
-- **Local Ollama** (llama3 default) — fully offline, no cloud dependency
-- **NPC dialogue:** personality + history context, 1-3 sentence responses
-- **Dungeon generation:** room-by-room atmospheric descriptions
-- **Quest hooks:** CR-appropriate, context-aware
-- **GM assistant:** rules lookup, encounter balancing, story ideas
-- **Graceful fallback:** static responses when Ollama unavailable
-- **Request cancellation:** by UUID, prevents stale response handling
-
----
-
-## Multiplayer Roles & Permissions
-
+# Dashboard API: http://localhost:3000
+# Health check:  http://localhost:3000/health
+# Adminer DB UI: http://localhost:8080 (add --profile debug)
+# LocalStack:    http://localhost:4566
 ```
-Game Master
-  ├── Full map edit
-  ├── All GM tools (fog, layers, notes, scene)
-  ├── Spawn/despawn all tokens
-  ├── Roll public and GM-only dice
-  ├── Assign player permissions
-  └── Switch scenes / end session
 
-Assistant GM
-  ├── Map edit (if granted)
-  ├── Spawn monsters
-  └── Roll GM dice
+### Production Deployment (30 minutes)
 
-Player
-  ├── Move own token
-  ├── Roll public dice
-  ├── Chat
-  └── View non-hidden objects
+```bash
+# 1. Configure
+cp terraform/envs/prod/terraform.tfvars.example terraform/envs/prod/terraform.tfvars
+# Edit with your domain, passwords, etc.
 
-Spectator
-  └── View only, no interaction
+# 2. Deploy infrastructure
+cd terraform
+terraform init && terraform apply -var-file=envs/prod/terraform.tfvars
+
+# 3. Build and push dashboard
+cd ../dashboard
+ECR_URL=$(cd ../terraform && terraform output -raw ecr_repository_url)
+aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_URL
+docker build -f ../docker/dashboard/Dockerfile -t $ECR_URL:latest .
+docker push $ECR_URL:latest
+
+# 4. Deploy to ECS
+aws ecs update-service \
+  --cluster realmforge-prod-cluster \
+  --service realmforge-prod-dashboard-svc \
+  --force-new-deployment
+
+# 5. Full runbook: docs/DEPLOYMENT_RUNBOOK.md
 ```
 
 ---
 
-## Modding SDK Quick Reference
+## Environment Variables
 
-```lua
--- Assets
-RF.RegisterAsset({ id, displayName, category, meshPath, iconPath, stats })
-
--- World
-RF.GetMiniaturesInCone(origin, range, angleDeg)
-RF.GetMiniaturesInRadius(origin, range)
-RF.ApplyDamage(targetName, amount, damageType)
-RF.SpawnMiniature(assetId, location)
-
--- Dice
-RF.RollDice("2d6+3")           -- Returns integer
-RF.RollDice("d20 adv")
-RF.RollDice("4d6kh3")          -- Keep highest 3
-
--- Campaign
-RF.GetWorldFlag(key)
-RF.SetWorldFlag(key, value)
-
--- Chat
-RF.AddChatMessage(text, style)  -- styles: "normal", "roll", "damage", "spell", "system"
-RF.RegisterChatCommand("/cmd", function(args, playerName) end)
-
--- Events
-RF.OnRoundStart(function(round) end)
-RF.OnTurnStart(function(miniName, round) end)
-RF.OnCombatEnd(function() end)
-RF.OnMiniatureDamaged(function(miniName, amount, type) end)
-
--- UI
-RF.RegisterUIPanel({ id, title, icon, render = function() end })
-RF.UI.Label(text, opts)
-RF.UI.Button(label, onClick)
-RF.UI.Separator()
-RF.UI.Slider(label, min, max, default, onChange)
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | ✅ | PostgreSQL connection string |
+| `REDIS_URL` | ✅ | Redis connection string |
+| `JWT_SECRET` | ✅ | 64-char random hex for JWT signing |
+| `AWS_REGION` | ✅ | AWS region |
+| `ASSETS_BUCKET` | ✅ | S3 bucket name for assets |
+| `GAMELIFT_FLEET` | ✅ | Fleet ID from GameLift |
+| `GAMELIFT_QUEUE` | ✅ | Queue name from GameLift |
+| `CORS_ORIGIN` | ✅ | Comma-separated allowed origins |
+| `DOMAIN` | ✅ | Public domain (realmforge.gg) |
+| `PORT` | - | API port (default: 3000) |
 
 ---
 
-## Performance Targets
+## AWS Services Used
 
-| Scenario | Target FPS |
-|----------|-----------|
-| 64×64 map, 4 players, all features | 60+ FPS |
-| 80×80 map, 8 players, 30 tokens | 45+ FPS |
-| Large outdoor map (256×256) | 30+ FPS |
+| Service | Purpose | Cost Driver |
+|---------|---------|-------------|
+| **GameLift** | Dedicated game servers | Instance hours |
+| **ECS Fargate** | Dashboard API | vCPU + memory hours |
+| **RDS PostgreSQL** | Campaign/user data | Instance hours |
+| **ElastiCache Redis** | Session state | Instance hours |
+| **ALB** | HTTPS load balancing | LCU hours |
+| **CloudFront** | CDN for assets + dashboard | Data transfer |
+| **S3** | Asset storage (maps, minis, audio) | Storage + requests |
+| **ACM** | TLS certificates | Free |
+| **Route53** | DNS | $0.50/zone/mo |
+| **Secrets Manager** | DB + JWT secrets | $0.40/secret/mo |
+| **CloudWatch** | Logs + alarms + dashboards | Log ingestion |
 
----
-
-## Contributing
-
-1. Fork the repo
-2. Create feature branch: `git checkout -b feature/my-system`
-3. Write tests for new systems
-4. Submit PR with system description + screenshots
-
----
-
-## License
-
-MIT License — free for personal and commercial use.
+**Estimated monthly cost: ~$220 (prod) / ~$45 (dev/staging)**
 
 ---
 
-*RealmForge Engine is inspired by TaleSpire, Foundry VTT, The RPG Engine, and the D&D/Pathfinder communities.*
+## Security Checklist
+
+- [x] All secrets in AWS Secrets Manager (never in code)
+- [x] RDS in private subnets only (no public access)
+- [x] Redis in private subnets only
+- [x] ECS tasks run as non-root user (UID 1001)
+- [x] ALB enforces HTTPS, redirects HTTP
+- [x] CloudFront enforces TLS 1.2+
+- [x] S3 bucket has public access blocked (CloudFront OAC)
+- [x] ECR images scanned on push
+- [x] RDS encrypted at rest + in transit
+- [x] Rate limiting on API (300 req/15min, 20 auth/15min)
+- [x] JWT validation on all protected routes
+- [x] Server RPCs validate GM role before sensitive operations
+- [x] GameLift player session validation on join
+
+---
+
+## Related Repositories
+
+- [`RealmForgeEngine`](../RealmForgeEngine) — UE5 game source (C++ / Blueprints)
+- `RealmForgeMods` — Community mod repository (planned)
+- `RealmForgeCompanion` — Mobile companion app (planned)

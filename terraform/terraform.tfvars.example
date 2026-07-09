@@ -1,0 +1,27 @@
+##############################################################
+# terraform.tfvars.example
+# Copy to envs/prod/terraform.tfvars and fill in values.
+# NEVER commit the real .tfvars file — it contains secrets.
+##############################################################
+
+aws_region  = "us-east-1"
+environment = "prod"
+
+# Your registered domain (must exist in Route53 hosted zone)
+domain_name = "realmforge.gg"
+
+# Strong random passwords — generate with:
+#   openssl rand -hex 32   → db_password
+#   openssl rand -hex 64   → jwt_secret
+db_password = "REPLACE_WITH_32_CHAR_RANDOM_HEX"
+jwt_secret  = "REPLACE_WITH_64_CHAR_RANDOM_HEX"
+
+# Filled after first terraform apply creates ECR:
+#   terraform output ecr_repository_url
+dashboard_ecr_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/realmforge-prod-dashboard:latest"
+
+# Path to your packaged UE5 Linux server zip (relative to terraform/ dir)
+server_build_zip = "../server/build/RealmForgeServer-Linux.zip"
+
+# Alert email for CloudWatch alarms
+alert_email = "ops@realmforge.gg"

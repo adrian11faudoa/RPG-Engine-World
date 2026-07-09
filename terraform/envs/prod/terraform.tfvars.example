@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and fill in real values.
+# NEVER commit terraform.tfvars — it is gitignored.
+
+aws_region  = "us-east-1"
+environment = "prod"
+domain_name = "realmforge.gg"
+
+# Generate: openssl rand -hex 16
+db_password = "CHANGE_ME_STRONG_DB_PASSWORD"
+
+# Generate: openssl rand -hex 32
+jwt_secret  = "CHANGE_ME_64_CHAR_HEX_JWT_SECRET"
+
+alert_email = "ops@realmforge.gg"
+
+# Filled by CI/CD after first ECR push
+dashboard_ecr_image = "placeholder"
+server_build_zip    = "../server/build/RealmForgeServer-Linux.zip"
